@@ -14,6 +14,8 @@ from math import cos, sin, pi, sqrt
 from plotting_utils import draw_plan
 from priority_queue import priority_dict
 
+np.random.seed(1)
+
 
 class State:
     """
@@ -46,6 +48,45 @@ class State:
     def euclidean_distance(self, state):
         assert (state)
         return sqrt((state.x - self.x) ** 2 + (state.y - self.y) ** 2)
+
+
+def steer_algorithm(s1: State, s2: State, height: int, max_radius: float):
+    """
+    This function is a helper function for steering
+
+    Reason for this helper function: the algorithm is complicated and long, we need to avoid redundant code
+    Problems:
+    1. The coordinate system in python is different from that of the system of math
+    (i.e. the direction of y is flipped),
+    2. We expect to steer in all directions (360 degrees), while trig function arctan's range is [-pi/2, pi/2]
+        quadrant 2 and 3 are not covered, we have to flip x-axis and do some trick
+    """
+    y1, y2 = height - s1.y, height - s2.y
+    real_dy = s2.y - s1.y
+    dx, dy = s2.x - s1.x, y2 - y1
+    if dx == 0:
+        # theta = np.arcsin(dy / max_radius)
+        x, y = s1.x, y1 + -np.sign(real_dy) * max_radius
+    else:
+        # arctan's range is [-pi / 2, pi / 2] (i.e. +- 90 degrees),
+        # quadrant 2 and 3 are not covered and impossible to steer towards that direction,
+        # if dx is negative theta will be wrong, so we need to deal with negative dx separately
+        theta = np.arctan(dy / dx)
+        if dx < 0:
+            # flip sign of dx to stay in [-pi / 2, pi / 2], result is theta2
+            dx_flip = -dx
+            theta = np.arctan(dy / dx_flip)
+            theta = -np.pi - theta if dy < 0 else np.pi - theta
+        dy2, dx2 = np.sin(theta) * max_radius, np.cos(theta) * max_radius
+        x, y = int(s1.x + dx2), int(y1 + dy2)
+    return x, int(height - y)
+
+
+def debug_draw(img: np.ndarray, s: State):
+    """This function is only for debugging purpose, to visualize the position of a state in map"""
+    img[s.y - 3:s.y + 3, s.x - 3:s.x + 3] = np.array([0, 0, 255])
+    cv2.imshow('image', img)
+    cv2.waitKey(10)
 
 
 class RRTPlanner:
@@ -127,16 +168,16 @@ class RRTPlanner:
         if s_rand.euclidean_distance(s_nearest) <= max_radius:
             x, y = s_rand.x, s_rand.y
         else:
-            dx, dy = s_rand.x - s_nearest.x, s_rand.y - s_nearest.y
-            if dx == 0:
-                # theta = np.arcsin(dy / max_radius)
-                x, y = s_nearest.x, s_nearest.y + np.sign(dy) * max_radius
-            else:
-                theta = np.arctan(dy / dx)
-                dy2, dx2 = np.sin(theta) * max_radius, np.cos(theta) * max_radius
-                # print(dy2, dx2, theta, dy, dx, max_radius)
-                x, y = int(s_nearest.x + dx2), int(s_nearest.y + dy2)
-
+            x, y = steer_algorithm(s_nearest, s_rand, self.world.shape[0], max_radius)
+            # dx, dy = s_rand.x - s_nearest.x, s_rand.y - s_nearest.y
+            # if dx == 0:
+            #     # theta = np.arcsin(dy / max_radius)
+            #     x, y = s_nearest.x, s_nearest.y + np.sign(dy) * max_radius
+            # else:
+            #     theta = np.arctan(dy / dx)
+            #     dy2, dx2 = np.sin(theta) * max_radius, np.cos(theta) * max_radius
+            #     # print(dy2, dx2, theta, dy, dx, max_radius)
+            #     x, y = int(s_nearest.x + dx2), int(s_nearest.y + dy2)
         s_new = State(x, y, s_nearest)
         return s_new
 
@@ -155,24 +196,15 @@ class RRTPlanner:
             # TODO: check if the inteprolated state that is float(i)/max_checks * dist(s_from, s_new)
             # away on the line from s_from to s_new is free or not. If not free return False
             distance = float(i) / max_checks * s_from.euclidean_distance(s_to)
-
-            dx, dy = s_to.x - s_from.x, s_to.y - s_to.y
-            if distance == 0:
-                x, y = s_from.x, s_from.y
-            else:
-                if dx == 0:
-                    theta = np.arcsin(dy / distance)
-                else:
-                    theta = np.arctan(dy / dx)
-                dy2, dx2 = np.sin(theta) * distance, np.cos(theta) * distance
-                x, y = int(s_from.x + dx2), int(s_from.y + dy2)
+            x, y = steer_algorithm(s_from, s_to, self.world.shape[0], distance)
             if not self.state_is_free(State(x, y, s_from)):
                 return False
 
         # Otherwise the line is free, so return true
         return True
 
-    def plan(self, start_state: State, dest_state: State, max_num_steps: int, max_steering_radius: float, dest_reached_radius: float):
+    def plan(self, start_state: State, dest_state: State, max_num_steps: int, max_steering_radius: float,
+             dest_reached_radius: float):
         """
         Returns a path as a sequence of states [start_state, ..., dest_state]
         if dest_state is reachable from start_state. Otherwise, returns [start_state].
@@ -187,16 +219,14 @@ class RRTPlanner:
 
         # image to be used to display the tree
         img = np.copy(self.world)
-
         plan = [start_state]
-
+        step_count = 0
         for step in range(max_num_steps):
-
+            step_count += 1
             # TODO: Use the methods of this class as in the slides to compute s_new
             s_rand = self.sample_state()
             s_nearest = self.find_closest_state(list(tree_nodes), s_rand)
             s_new = self.steer_towards(s_nearest, s_rand, max_steering_radius)
-
             if self.path_is_obstacle_free(s_nearest, s_new):
                 tree_nodes.add(s_new)
                 s_nearest.children.append(s_new)
