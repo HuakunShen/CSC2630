@@ -2,6 +2,8 @@
 import sys
 import time
 import pickle
+from typing import List
+
 import numpy as np
 import random
 import cv2
@@ -11,6 +13,7 @@ from math import cos, sin, pi, sqrt
 
 from plotting_utils import draw_plan
 from priority_queue import priority_dict
+
 
 class State:
     """
@@ -27,7 +30,6 @@ class State:
         self.parent = parent
         self.children = []
 
-
     def __eq__(self, state):
         """
         When are two states equal?
@@ -43,7 +45,8 @@ class State:
 
     def euclidean_distance(self, state):
         assert (state)
-        return sqrt((state.x - self.x)**2 + (state.y - self.y)**2)
+        return sqrt((state.x - self.x) ** 2 + (state.y - self.y) ** 2)
+
 
 class RRTPlanner:
     """
@@ -55,27 +58,26 @@ class RRTPlanner:
         self.world = world
 
         # (rows, cols) binary array. Cell is 1 iff it is occupied
-        self.occ_grid = self.world[:,:,0]
+        self.occ_grid = self.world[:, :, 0]
         self.occ_grid = (self.occ_grid == 0).astype('uint8')
 
-    def state_is_free(self, state):
+    def state_is_free(self, state: State):
         """
         Does collision detection. Returns true iff the state and its nearby
         surroundings are free.
         """
-        return (self.occ_grid[state.y-5:state.y+5, state.x-5:state.x+5] == 0).all()
-
+        return (self.occ_grid[state.y - 5:state.y + 5, state.x - 5:state.x + 5] == 0).all()
 
     def sample_state(self):
         """
         Sample a new state uniformly randomly on the image.
         """
-        #TODO: make sure you're not exceeding the row and columns bounds
+        # TODO: make sure you're not exceeding the row and columns bounds
         # x must be in {0, cols-1} and y must be in {0, rows -1}
-        x = 0
-        y = 0
+        rows, cols = self.world.shape[:2]
+        x = np.random.randint(0, cols)
+        y = np.random.randint(0, rows)
         return State(x, y, None)
-
 
     def _follow_parent_pointers(self, state):
         """
@@ -93,8 +95,8 @@ class RRTPlanner:
         # return a reverse copy of the path (so that first state is starting state)
         return path[::-1]
 
-
-    def find_closest_state(self, tree_nodes, state):
+    def find_closest_state(self, tree_nodes: List[State], state: State):
+        """From existing nodes, search for the node closest to the given state"""
         min_dist = float("Inf")
         closest_state = None
         for node in tree_nodes:
@@ -105,7 +107,7 @@ class RRTPlanner:
 
         return closest_state
 
-    def steer_towards(self, s_nearest, s_rand, max_radius):
+    def steer_towards(self, s_nearest: State, s_rand: State, max_radius: float):
         """
         Returns a new state s_new whose coordinates x and y
         are decided as follows:
@@ -119,17 +121,26 @@ class RRTPlanner:
 
         """
 
-        #TODO: populate x and y properly according to the description above.
-        #Note: x and y are integers and they should be in {0, ..., cols -1}
+        # TODO: populate x and y properly according to the description above.
+        # Note: x and y are integers and they should be in {0, ..., cols -1}
         # and {0, ..., rows -1} respectively
-        x = 0
-        y = 0
+        if s_rand.euclidean_distance(s_nearest) <= max_radius:
+            x, y = s_rand.x, s_rand.y
+        else:
+            dx, dy = s_rand.x - s_nearest.x, s_rand.y - s_nearest.y
+            if dx == 0:
+                # theta = np.arcsin(dy / max_radius)
+                x, y = s_nearest.x, s_nearest.y + np.sign(dy) * max_radius
+            else:
+                theta = np.arctan(dy / dx)
+                dy2, dx2 = np.sin(theta) * max_radius, np.cos(theta) * max_radius
+                # print(dy2, dx2, theta, dy, dx, max_radius)
+                x, y = int(s_nearest.x + dx2), int(s_nearest.y + dy2)
 
         s_new = State(x, y, s_nearest)
         return s_new
 
-
-    def path_is_obstacle_free(self, s_from, s_to):
+    def path_is_obstacle_free(self, s_from: State, s_to: State) -> bool:
         """
         Returns true iff the line path from s_from to s_to
         is free
@@ -143,16 +154,28 @@ class RRTPlanner:
         for i in range(max_checks):
             # TODO: check if the inteprolated state that is float(i)/max_checks * dist(s_from, s_new)
             # away on the line from s_from to s_new is free or not. If not free return False
-            return False
+            distance = float(i) / max_checks * s_from.euclidean_distance(s_to)
+
+            dx, dy = s_to.x - s_from.x, s_to.y - s_to.y
+            if distance == 0:
+                x, y = s_from.x, s_from.y
+            else:
+                if dx == 0:
+                    theta = np.arcsin(dy / distance)
+                else:
+                    theta = np.arctan(dy / dx)
+                dy2, dx2 = np.sin(theta) * distance, np.cos(theta) * distance
+                x, y = int(s_from.x + dx2), int(s_from.y + dy2)
+            if not self.state_is_free(State(x, y, s_from)):
+                return False
 
         # Otherwise the line is free, so return true
         return True
 
-
-    def plan(self, start_state, dest_state, max_num_steps, max_steering_radius, dest_reached_radius):
+    def plan(self, start_state: State, dest_state: State, max_num_steps: int, max_steering_radius: float, dest_reached_radius: float):
         """
         Returns a path as a sequence of states [start_state, ..., dest_state]
-        if dest_state is reachable from start_state. Otherwise returns [start_state].
+        if dest_state is reachable from start_state. Otherwise, returns [start_state].
         Assume both source and destination are in free space.
         """
         assert (self.state_is_free(start_state))
@@ -169,10 +192,10 @@ class RRTPlanner:
 
         for step in range(max_num_steps):
 
-            # TODO: Use the methods of this class as in the slides to
-            # compute s_new
-            s_nearest = None
-            s_new = None
+            # TODO: Use the methods of this class as in the slides to compute s_new
+            s_rand = self.sample_state()
+            s_nearest = self.find_closest_state(list(tree_nodes), s_rand)
+            s_new = self.steer_towards(s_nearest, s_rand, max_steering_radius)
 
             if self.path_is_obstacle_free(s_nearest, s_new):
                 tree_nodes.add(s_new)
@@ -186,18 +209,17 @@ class RRTPlanner:
                     break
 
                 # plot the new node and edge
-                cv2.circle(img, (s_new.x, s_new.y), 2, (0,0,0))
-                cv2.line(img, (s_nearest.x, s_nearest.y), (s_new.x, s_new.y), (255,0,0))
+                cv2.circle(img, (s_new.x, s_new.y), 2, (0, 0, 0))
+                cv2.line(img, (s_nearest.x, s_nearest.y), (s_new.x, s_new.y), (255, 0, 0))
 
             # Keep showing the image for a bit even
             # if we don't add a new node and edge
             cv2.imshow('image', img)
             cv2.waitKey(10)
 
-        draw_plan(img, plan, bgr=(0,0,255), thickness=2)
+        draw_plan(img, plan, bgr=(0, 0, 255), thickness=2)
         cv2.waitKey(0)
         return [start_state]
-
 
 
 if __name__ == "__main__":
@@ -215,12 +237,11 @@ if __name__ == "__main__":
     start_state = State(10, 10, None)
     dest_state = State(500, 500, None)
 
-    max_num_steps = 1000     # max number of nodes to be added to the tree
-    max_steering_radius = 30 # pixels
-    dest_reached_radius = 50 # pixels
+    max_num_steps = 1000  # max number of nodes to be added to the tree
+    max_steering_radius = 30  # pixels
+    dest_reached_radius = 50  # pixels
     plan = rrt.plan(start_state,
                     dest_state,
                     max_num_steps,
                     max_steering_radius,
                     dest_reached_radius)
-
